@@ -14,11 +14,11 @@ static bool BACnet_Debug_Enabled;
 /* timers */
 static struct mstimer apdu_timer = { 0 }; 
 static struct mstimer datalink_timer = { 0 };
+static struct mstimer tsm_timer = { 0 };
 
 #define BAC_ADDRESS_MULT 1
 
 struct device_entry {
-    std::string name;
     std::vector<BACNET_OBJECT_ID> object_list;
 };
 std::unordered_map<uint32_t, device_entry> device_map;
@@ -56,25 +56,12 @@ static void i_am_handler(uint8_t *service_request, uint16_t service_len, BACNET_
     return;
 }
 
-static void MyAbortHandler(
-    BACNET_ADDRESS *src, uint8_t invoke_id, uint8_t abort_reason, bool server)
+static void My_Confirmed_COV_Notification_Handler(uint8_t *service_request,
+    uint16_t service_len,
+    BACNET_ADDRESS *src,
+    BACNET_CONFIRMED_SERVICE_DATA *service_data)
 {
-    /* FIXME: verify src and invoke id */
-    (void)src;
-    (void)invoke_id;
-    (void)server;
-    fprintf(
-        stderr, "BACnet Abort: %s\n", bactext_abort_reason_name(abort_reason));
-}
-
-static void MyRejectHandler(
-    BACNET_ADDRESS *src, uint8_t invoke_id, uint8_t reject_reason)
-{
-    /* FIXME: verify src and invoke id */
-    (void)src;
-    (void)invoke_id;
-    fprintf(stderr, "BACnet Reject: %s\n",
-        bactext_reject_reason_name(reject_reason));
+    handler_ccov_notification(service_request, service_len, src, service_data);
 }
 
 static void handle_object_list(uint32_t device_id, const BACNET_READ_PROPERTY_DATA& data) {
@@ -107,51 +94,28 @@ static void handle_object_list(uint32_t device_id, const BACNET_READ_PROPERTY_DA
             application_data += len;
             application_data_len -= len;
         } else {
+	    for (const auto& object_id: object_list) {
+		BACNET_SUBSCRIBE_COV_DATA cov_data = {
+		    .subscriberProcessIdentifier = device_id,
+		    .monitoredObjectIdentifier = {
+		        .type = object_id.type,
+		        .instance = object_id.instance
+		    },
+		    .cancellationRequest = false,
+		    .issueConfirmedNotifications = true,
+		    .lifetime = 300
+		};
+                Send_COV_Subscribe(device_id, &cov_data);
+	    }
             device_map[device_id] = {.object_list = std::move(object_list)};
             if (BACnet_Debug_Enabled) {
                 fprintf(stderr, "Adding new device entry for device %d\n", device_id);
-            }
-            if (BACnet_Debug_Enabled) {
-                fprintf(stderr, "Reading device name from device %u\n", device_id);
-            }
-            int invoke_id = Send_Read_Property_Request(
-                device_id,
-                OBJECT_DEVICE,
-                device_id,
-                PROP_OBJECT_NAME,
-                BACNET_ARRAY_ALL
-            );
-            if (invoke_id == 0) {
-                fprintf(stderr, "Failed to read device name from device %u\n", device_id);
-                return;
             }
             break;
         }
     }
 }
 
-static void handle_device_name(uint32_t device_id, const BACNET_READ_PROPERTY_DATA& data) {
-    if (BACnet_Debug_Enabled) {
-        fprintf(stderr, "Received device name from device %d\n", device_id);
-    }
-    BACNET_APPLICATION_DATA_VALUE value;
-    int len = bacapp_decode_known_property(
-        data.application_data,
-        data.application_data_len,
-        &value,
-        data.object_type,
-        data.object_property
-    );
-
-    if (len < 0) {
-        fprintf(stderr, "RP Ack: unable to decode! %s:%s\n",
-            bactext_object_type_name(data.object_type),
-            bactext_property_name(data.object_property)
-        );
-        return;
-    }
-    device_map[device_id].name = characterstring_value(&value.type.Character_String);
-}
 /** Handler for a ReadProperty ACK.
  * @ingroup DSRP
  * Doesn't actually do anything, except, for debugging, to
@@ -184,9 +148,58 @@ static void read_property_ack_handler(
 
     if (data.object_type == OBJECT_DEVICE and data.object_property == PROP_OBJECT_LIST)
         handle_object_list(device_id, data);
+}
 
-    if (data.object_type == OBJECT_DEVICE and data.object_property == PROP_OBJECT_NAME)
-        handle_device_name(device_id, data);
+static void MyWritePropertySimpleAckHandler(
+    BACNET_ADDRESS *src, uint8_t invoke_id)
+{
+    printf("SubscribeCOV Acknowledged!\n");
+}
+
+static void MyErrorHandler(
+    BACNET_ADDRESS *src,
+    uint8_t invoke_id,
+    BACNET_ERROR_CLASS error_class,
+    BACNET_ERROR_CODE error_code
+)
+{
+    printf(
+        "BACnet Error: %s: %s\n",
+	bactext_error_class_name(static_cast<int>(error_class)),
+        bactext_error_code_name(static_cast<int>(error_code))
+    );
+}
+
+static void MyAbortHandler(
+    BACNET_ADDRESS *src,
+    uint8_t invoke_id,
+    uint8_t abort_reason,
+    bool server
+)
+{
+    /* FIXME: verify src and invoke id */
+    (void)src;
+    (void)invoke_id;
+    (void)server;
+    fprintf(stderr, "BACnet Abort: %s\n", bactext_abort_reason_name(abort_reason));
+}
+
+static void MyRejectHandler(
+    BACNET_ADDRESS *src,
+    uint8_t invoke_id,
+    uint8_t reject_reason
+)
+{
+    /* FIXME: verify src and invoke id */
+    (void)src;
+    (void)invoke_id;
+    fprintf(stderr, "BACnet Reject: %s\n", bactext_reject_reason_name(reject_reason));
+}
+
+void TsmTimeoutHandler(uint8_t invoke_id)
+{
+    fprintf(stderr, "BACnet Timeout: %d\n", invoke_id);
+    tsm_free_invoke_id(invoke_id);
 }
 
 static void init_service_handlers(void)
@@ -201,11 +214,16 @@ static void init_service_handlers(void)
     apdu_set_confirmed_handler(SERVICE_CONFIRMED_READ_PROPERTY, handler_read_property);
     /* handle the reply (request) coming back */
     apdu_set_unconfirmed_handler(SERVICE_UNCONFIRMED_I_AM, i_am_handler);
+    apdu_set_confirmed_handler(SERVICE_CONFIRMED_COV_NOTIFICATION, My_Confirmed_COV_Notification_Handler);
     /* handle the data coming back from confirmed requests */
     apdu_set_confirmed_ack_handler(SERVICE_CONFIRMED_READ_PROPERTY, read_property_ack_handler);
+    apdu_set_confirmed_simple_ack_handler(SERVICE_CONFIRMED_SUBSCRIBE_COV, MyWritePropertySimpleAckHandler);
     /* handle any errors coming back */
+    apdu_set_error_handler(SERVICE_CONFIRMED_READ_PROPERTY, MyErrorHandler);
+    apdu_set_error_handler(SERVICE_CONFIRMED_SUBSCRIBE_COV, MyErrorHandler);
     apdu_set_abort_handler(MyAbortHandler);
     apdu_set_reject_handler(MyRejectHandler);
+    tsm_set_timeout_handler(TsmTimeoutHandler);
 }
 
 void bacnet_init() {
@@ -221,6 +239,7 @@ void bacnet_init() {
     atexit(datalink_cleanup);
     mstimer_set(&apdu_timer, apdu_timeout() * apdu_retries());
     mstimer_set(&datalink_timer, 1000);
+    mstimer_set(&tsm_timer, 100);
     BACNET_ADDRESS dest = {
         .mac_len = 0,
         .net = BACNET_BROADCAST_NETWORK,
@@ -247,9 +266,12 @@ void bacnet_task() {
     if (pdu_len) {
         npdu_handler(&src, &Rx_Buf[0], pdu_len);
     }
+    if (mstimer_expired(&tsm_timer)) {
+        tsm_timer_milliseconds(mstimer_interval(&tsm_timer));
+        mstimer_reset(&tsm_timer);
+    }
     if (mstimer_expired(&datalink_timer)) {
-        datalink_maintenance_timer(
-            mstimer_interval(&datalink_timer) / 1000);
+        datalink_maintenance_timer(mstimer_interval(&datalink_timer) / 1000);
         mstimer_reset(&datalink_timer);
     }
     if (mstimer_expired(&apdu_timer)) {
