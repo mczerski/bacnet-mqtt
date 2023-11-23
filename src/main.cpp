@@ -86,9 +86,9 @@ int main(int argc, char *argv[]) {
     void bacnet_task();
 
     bacnet_init();
-    mesg::MessageHandler handle("192.168.1.105", 1883);
-    std::cout << "start init" << std::endl;
-    handle.init();
+    //mesg::MessageHandler handle("192.168.1.105", 1883);
+    //std::cout << "start init" << std::endl;
+    //handle.init();
  
     while (true) {
         bacnet_task();

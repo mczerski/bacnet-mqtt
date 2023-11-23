@@ -94,19 +94,21 @@ static void handle_object_list(uint32_t device_id, const BACNET_READ_PROPERTY_DA
             application_data += len;
             application_data_len -= len;
         } else {
-	    for (const auto& object_id: object_list) {
-		BACNET_SUBSCRIBE_COV_DATA cov_data = {
-		    .subscriberProcessIdentifier = device_id,
-		    .monitoredObjectIdentifier = {
-		        .type = object_id.type,
-		        .instance = object_id.instance
-		    },
-		    .cancellationRequest = false,
-		    .issueConfirmedNotifications = true,
-		    .lifetime = 300
-		};
+            for (const auto& object_id: object_list) {
+                if (object_id.type == OBJECT_DEVICE)
+                    continue;
+                BACNET_SUBSCRIBE_COV_DATA cov_data = {
+                    .subscriberProcessIdentifier = device_id,
+                    .monitoredObjectIdentifier = {
+                        .type = object_id.type,
+                        .instance = object_id.instance
+                    },
+                    .cancellationRequest = false,
+                    .issueConfirmedNotifications = true,
+                    .lifetime = 300
+                };
                 Send_COV_Subscribe(device_id, &cov_data);
-	    }
+            }
             device_map[device_id] = {.object_list = std::move(object_list)};
             if (BACnet_Debug_Enabled) {
                 fprintf(stderr, "Adding new device entry for device %d\n", device_id);
