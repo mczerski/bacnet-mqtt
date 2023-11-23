@@ -56,13 +56,11 @@ static void i_am_handler(uint8_t *service_request, uint16_t service_len, BACNET_
     return;
 }
 
-static void My_Confirmed_COV_Notification_Handler(uint8_t *service_request,
-    uint16_t service_len,
-    BACNET_ADDRESS *src,
-    BACNET_CONFIRMED_SERVICE_DATA *service_data)
+static void ccov_notification_handle(BACNET_COV_DATA *cov_data)
 {
-    handler_ccov_notification(service_request, service_len, src, service_data);
+    printf("ccov_notification_handle, pid: %d, did: %d\n", cov_data->subscriberProcessIdentifier, cov_data->initiatingDeviceIdentifier);
 }
+static BACNET_COV_NOTIFICATION ccov_cb = {.next = nullptr, .callback = ccov_notification_handle};
 
 static void handle_object_list(uint32_t device_id, const BACNET_READ_PROPERTY_DATA& data) {
     if (BACnet_Debug_Enabled) {
@@ -107,7 +105,8 @@ static void handle_object_list(uint32_t device_id, const BACNET_READ_PROPERTY_DA
                     .issueConfirmedNotifications = true,
                     .lifetime = 300
                 };
-                Send_COV_Subscribe(device_id, &cov_data);
+		// TODO: to zapisać
+                auto invoke_id = Send_COV_Subscribe(device_id, &cov_data);
             }
             device_map[device_id] = {.object_list = std::move(object_list)};
             if (BACnet_Debug_Enabled) {
@@ -152,10 +151,16 @@ static void read_property_ack_handler(
         handle_object_list(device_id, data);
 }
 
-static void MyWritePropertySimpleAckHandler(
+static void handler_subscribe_ccov_ack(
     BACNET_ADDRESS *src, uint8_t invoke_id)
 {
-    printf("SubscribeCOV Acknowledged!\n");
+    uint32_t device_id;
+    bool found = address_get_device_id(src, &device_id);
+    if (not found)
+        return;
+
+    // TODO: tu zmatchować i onznaczy że jest subskrypcja
+    printf("SubscribeCOV Acknowledged! addr: %x, %d\n", src->mac[0], invoke_id);
 }
 
 static void MyErrorHandler(
@@ -216,10 +221,11 @@ static void init_service_handlers(void)
     apdu_set_confirmed_handler(SERVICE_CONFIRMED_READ_PROPERTY, handler_read_property);
     /* handle the reply (request) coming back */
     apdu_set_unconfirmed_handler(SERVICE_UNCONFIRMED_I_AM, i_am_handler);
-    apdu_set_confirmed_handler(SERVICE_CONFIRMED_COV_NOTIFICATION, My_Confirmed_COV_Notification_Handler);
+    apdu_set_confirmed_handler(SERVICE_CONFIRMED_COV_NOTIFICATION, handler_ccov_notification);
+    handler_ccov_notification_add(&ccov_cb);
     /* handle the data coming back from confirmed requests */
     apdu_set_confirmed_ack_handler(SERVICE_CONFIRMED_READ_PROPERTY, read_property_ack_handler);
-    apdu_set_confirmed_simple_ack_handler(SERVICE_CONFIRMED_SUBSCRIBE_COV, MyWritePropertySimpleAckHandler);
+    apdu_set_confirmed_simple_ack_handler(SERVICE_CONFIRMED_SUBSCRIBE_COV, handler_subscribe_ccov_ack);
     /* handle any errors coming back */
     apdu_set_error_handler(SERVICE_CONFIRMED_READ_PROPERTY, MyErrorHandler);
     apdu_set_error_handler(SERVICE_CONFIRMED_SUBSCRIBE_COV, MyErrorHandler);
