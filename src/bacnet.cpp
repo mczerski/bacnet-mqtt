@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
+#include <chrono>
 #include "bacnet.hpp"
 
 /* buffer used for receive */
@@ -22,6 +23,22 @@ struct device_entry {
     std::vector<BACNET_OBJECT_ID> object_list;
 };
 std::unordered_map<uint32_t, device_entry> device_map;
+
+struct cov_entry {
+    std::chrono::time_point<std::chrono::system_clock> subscribe_end;
+};
+template <>
+struct std::hash<std::pair<uint32_t, BACNET_OBJECT_ID>>
+{
+  std::size_t operator()(const std::pair<uint32_t, BACNET_OBJECT_ID>& k) const
+  {
+    return std::hash<uint32_t>()(k.first) ^ std::hash<int>()(static_cast<int>(k.second.type)) ^ std::hash<uint32_t>()(k.second.instance);
+  }
+};
+bool operator==(const BACNET_OBJECT_ID& lhs, const BACNET_OBJECT_ID& rhs) {
+    return lhs.type == rhs.type and lhs.instance == rhs.instance;
+}
+std::unordered_map<std::pair<uint32_t, BACNET_OBJECT_ID>, cov_entry> cov_map;
 
 static void device_map_add(uint32_t device_id)
 {
@@ -58,7 +75,10 @@ static void i_am_handler(uint8_t *service_request, uint16_t service_len, BACNET_
 
 static void ccov_notification_handle(BACNET_COV_DATA *cov_data)
 {
-    printf("ccov_notification_handle, pid: %d, did: %d\n", cov_data->subscriberProcessIdentifier, cov_data->initiatingDeviceIdentifier);
+    auto cov_key = std::make_pair(cov_data->initiatingDeviceIdentifier, cov_data->monitoredObjectIdentifier);
+    auto subscribe_end = std::chrono::system_clock::now() + std::chrono::seconds(cov_data->timeRemaining);
+    cov_map[cov_key] = {.subscribe_end = subscribe_end};
+    std::cout << "cov notification from " << cov_data->initiatingDeviceIdentifier << ", next subscribe " << cov_data->timeRemaining << std::endl;
 }
 static BACNET_COV_NOTIFICATION ccov_cb = {.next = nullptr, .callback = ccov_notification_handle};
 
@@ -95,6 +115,7 @@ static void handle_object_list(uint32_t device_id, const BACNET_READ_PROPERTY_DA
             for (const auto& object_id: object_list) {
                 if (object_id.type == OBJECT_DEVICE)
                     continue;
+                cov_map[std::make_pair(device_id, object_id)] = {.subscribe_end = std::chrono::time_point<std::chrono::system_clock>()};
                 BACNET_SUBSCRIBE_COV_DATA cov_data = {
                     .subscriberProcessIdentifier = device_id,
                     .monitoredObjectIdentifier = {
@@ -105,8 +126,7 @@ static void handle_object_list(uint32_t device_id, const BACNET_READ_PROPERTY_DA
                     .issueConfirmedNotifications = true,
                     .lifetime = 300
                 };
-		// TODO: to zapisać
-                auto invoke_id = Send_COV_Subscribe(device_id, &cov_data);
+                Send_COV_Subscribe(device_id, &cov_data);
             }
             device_map[device_id] = {.object_list = std::move(object_list)};
             if (BACnet_Debug_Enabled) {
@@ -159,8 +179,7 @@ static void handler_subscribe_ccov_ack(
     if (not found)
         return;
 
-    // TODO: tu zmatchować i onznaczy że jest subskrypcja
-    printf("SubscribeCOV Acknowledged! addr: %x, %d\n", src->mac[0], invoke_id);
+    printf("SubscribeCOV Acknowledged from: %x\n", src->mac[0]);
 }
 
 static void MyErrorHandler(
@@ -171,8 +190,9 @@ static void MyErrorHandler(
 )
 {
     printf(
-        "BACnet Error: %s: %s\n",
-	bactext_error_class_name(static_cast<int>(error_class)),
+        "BACnet Error (invoke id %d): %s: %s\n",
+        invoke_id,
+        bactext_error_class_name(static_cast<int>(error_class)),
         bactext_error_code_name(static_cast<int>(error_code))
     );
 }
@@ -234,6 +254,24 @@ static void init_service_handlers(void)
     tsm_set_timeout_handler(TsmTimeoutHandler);
 }
 
+void renew_subscriptions() {
+    auto now = std::chrono::system_clock::now() + std::chrono::minutes(1);
+    for (const auto& [cov_key, cov_entry]: cov_map) {
+        auto next = std::chrono::duration_cast<std::chrono::seconds>(cov_entry.subscribe_end - now);
+        std::cout << "renew: " << cov_key.first << " next " << next.count() << std::endl;
+        if (cov_entry.subscribe_end <= now) {
+            BACNET_SUBSCRIBE_COV_DATA cov_data = {
+                .subscriberProcessIdentifier = cov_key.first,
+                .monitoredObjectIdentifier = cov_key.second,
+                .cancellationRequest = false,
+                .issueConfirmedNotifications = true,
+                .lifetime = 300
+            };
+            Send_COV_Subscribe(cov_key.first, &cov_data);
+        }
+    }
+}
+
 void bacnet_init() {
     /* check for local environment settings */
     if (getenv("BACNET_DEBUG")) {
@@ -288,5 +326,6 @@ void bacnet_task() {
         }
         Send_WhoIs_To_Network(&dest, -1, -1);
         mstimer_reset(&apdu_timer);
+        renew_subscriptions();
     }
 }

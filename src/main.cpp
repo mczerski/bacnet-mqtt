@@ -36,7 +36,7 @@ public:
         // init recive callback
         mosquitto_lib_init(); 
 
-        auto register_callback = [=] {
+        auto register_callback = [this] {
             mosquitto_subscribe_callback(
                 &MessageHandler::call_back_func, NULL,
                 "MessageHandler/#", 0,
