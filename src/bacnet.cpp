@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <iostream>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <algorithm>
 #include <chrono>
@@ -13,7 +14,8 @@ static uint8_t Rx_Buf[MAX_MPDU] = { 0 };
 static bool BACnet_Debug_Enabled;
 
 /* timers */
-static struct mstimer apdu_timer = { 0 }; 
+static struct mstimer subscription_timer = { 0 }; 
+static struct mstimer who_is_timer = { 0 }; 
 static struct mstimer datalink_timer = { 0 };
 static struct mstimer tsm_timer = { 0 };
 
@@ -78,7 +80,6 @@ static void ccov_notification_handle(BACNET_COV_DATA *cov_data)
     auto cov_key = std::make_pair(cov_data->initiatingDeviceIdentifier, cov_data->monitoredObjectIdentifier);
     auto subscribe_end = std::chrono::system_clock::now() + std::chrono::seconds(cov_data->timeRemaining);
     cov_map[cov_key] = {.subscribe_end = subscribe_end};
-    std::cout << "cov notification from " << cov_data->initiatingDeviceIdentifier << ", next subscribe " << cov_data->timeRemaining << std::endl;
 }
 static BACNET_COV_NOTIFICATION ccov_cb = {.next = nullptr, .callback = ccov_notification_handle};
 
@@ -116,17 +117,6 @@ static void handle_object_list(uint32_t device_id, const BACNET_READ_PROPERTY_DA
                 if (object_id.type == OBJECT_DEVICE)
                     continue;
                 cov_map[std::make_pair(device_id, object_id)] = {.subscribe_end = std::chrono::time_point<std::chrono::system_clock>()};
-                BACNET_SUBSCRIBE_COV_DATA cov_data = {
-                    .subscriberProcessIdentifier = device_id,
-                    .monitoredObjectIdentifier = {
-                        .type = object_id.type,
-                        .instance = object_id.instance
-                    },
-                    .cancellationRequest = false,
-                    .issueConfirmedNotifications = true,
-                    .lifetime = 300
-                };
-                Send_COV_Subscribe(device_id, &cov_data);
             }
             device_map[device_id] = {.object_list = std::move(object_list)};
             if (BACnet_Debug_Enabled) {
@@ -256,10 +246,22 @@ static void init_service_handlers(void)
 
 void renew_subscriptions() {
     auto now = std::chrono::system_clock::now() + std::chrono::minutes(1);
+    std::unordered_set<uint32_t> handeled_devices;
     for (const auto& [cov_key, cov_entry]: cov_map) {
+        if (handeled_devices.count(cov_key.first)) {
+            continue;
+        }
         auto next = std::chrono::duration_cast<std::chrono::seconds>(cov_entry.subscribe_end - now);
-        std::cout << "renew: " << cov_key.first << " next " << next.count() << std::endl;
         if (cov_entry.subscribe_end <= now) {
+            if (BACnet_Debug_Enabled) {
+                fprintf(
+                    stderr,
+                    "Sending COV subscribe to: %d, type: %s, instance %d\n",
+                    cov_key.first,
+                    bactext_object_type_name(cov_key.second.type),
+                    cov_key.second.instance
+                );
+            }
             BACNET_SUBSCRIBE_COV_DATA cov_data = {
                 .subscriberProcessIdentifier = cov_key.first,
                 .monitoredObjectIdentifier = cov_key.second,
@@ -268,6 +270,7 @@ void renew_subscriptions() {
                 .lifetime = 300
             };
             Send_COV_Subscribe(cov_key.first, &cov_data);
+            handeled_devices.insert(cov_key.first);
         }
     }
 }
@@ -283,7 +286,8 @@ void bacnet_init() {
     address_init();
     dlenv_init();
     atexit(datalink_cleanup);
-    mstimer_set(&apdu_timer, apdu_timeout() * apdu_retries());
+    mstimer_set(&subscription_timer, apdu_timeout() * apdu_retries());
+    mstimer_set(&who_is_timer, 10 * apdu_timeout() * apdu_retries());
     mstimer_set(&datalink_timer, 1000);
     mstimer_set(&tsm_timer, 100);
     BACNET_ADDRESS dest = {
@@ -292,17 +296,12 @@ void bacnet_init() {
         .len = 0
     };
     if (BACnet_Debug_Enabled) {
-        fprintf(stderr, "Sending Who-Is Request");
+        fprintf(stderr, "Sending Who-Is Request\n");
     }
     Send_WhoIs_To_Network(&dest, -1, -1);
 }
 
 void bacnet_task() {
-    BACNET_ADDRESS dest = {
-        .mac_len = 0,
-        .net = BACNET_BROADCAST_NETWORK,
-        .len = 0
-    };
     BACNET_ADDRESS src = { 0 };
     unsigned delay_milliseconds = 100;
 
@@ -320,12 +319,19 @@ void bacnet_task() {
         datalink_maintenance_timer(mstimer_interval(&datalink_timer) / 1000);
         mstimer_reset(&datalink_timer);
     }
-    if (mstimer_expired(&apdu_timer)) {
-        if (BACnet_Debug_Enabled) {
-            fprintf(stderr, "Sending Who-Is Request");
-        }
-        Send_WhoIs_To_Network(&dest, -1, -1);
-        mstimer_reset(&apdu_timer);
+    if (mstimer_expired(&subscription_timer)) {
+        mstimer_reset(&subscription_timer);
         renew_subscriptions();
+    }
+    if (mstimer_expired(&subscription_timer)) {
+        if (BACnet_Debug_Enabled) {
+            fprintf(stderr, "Sending Who-Is Request\n");
+        }
+        BACNET_ADDRESS dest = {
+            .mac_len = 0,
+            .net = BACNET_BROADCAST_NETWORK,
+            .len = 0
+        };
+        Send_WhoIs_To_Network(&dest, -1, -1);
     }
 }
