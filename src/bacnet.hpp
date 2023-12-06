@@ -20,3 +20,9 @@
 #include <rs485.h>
 #include <bacnet/datalink/dlenv.h>
 #include <bacport.h>
+#include <functional>
+
+typedef std::function<void(uint32_t, uint32_t, uint32_t, std::string)> ccov_notification_handler;
+
+void bacnet_init(ccov_notification_handler handler);
+void bacnet_task();

@@ -19,7 +19,7 @@ FetchContent_MakeAvailable(bacnet-stack)
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 include_directories(${MOSQUITTO_INCLUDE_DIR})
 
-add_executable(bacnet-mqtt src/main.cpp src/bacnet.cpp)
+add_executable(bacnet-mqtt src/main.cpp src/bacnet.cpp src/mqtt.cpp)
 add_dependencies(bacnet-mqtt bacnet-stack)
 target_link_libraries(bacnet-mqtt ${MOSQUITTO_LIBRARIES})
 target_link_libraries(bacnet-mqtt bacnet-stack::bacnet-stack)

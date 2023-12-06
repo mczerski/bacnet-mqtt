@@ -1,3 +1,4 @@
+#include "bacnet.hpp"
 #include <cstdint>
 #include <iostream>
 #include <unordered_map>
@@ -5,7 +6,6 @@
 #include <vector>
 #include <algorithm>
 #include <chrono>
-#include "bacnet.hpp"
 
 /* buffer used for receive */
 static uint8_t Rx_Buf[MAX_MPDU] = { 0 };
@@ -18,8 +18,7 @@ static struct mstimer subscription_timer = { 0 };
 static struct mstimer who_is_timer = { 0 }; 
 static struct mstimer datalink_timer = { 0 };
 static struct mstimer tsm_timer = { 0 };
-
-#define BAC_ADDRESS_MULT 1
+static ccov_notification_handler ccov_notification_handler_ = nullptr;
 
 struct device_entry {
     std::vector<BACNET_OBJECT_ID> object_list;
@@ -75,13 +74,50 @@ static void i_am_handler(uint8_t *service_request, uint16_t service_len, BACNET_
     return;
 }
 
+std::string application_data_value_to_string(const BACNET_APPLICATION_DATA_VALUE& value) {
+    switch (value.tag) {
+        case BACNET_APPLICATION_TAG_BOOLEAN:
+            return std::to_string(value.type.Boolean);
+        case BACNET_APPLICATION_TAG_UNSIGNED_INT:
+            return std::to_string(value.type.Unsigned_Int);
+        case BACNET_APPLICATION_TAG_SIGNED_INT:
+            return std::to_string(value.type.Signed_Int);
+        case BACNET_APPLICATION_TAG_REAL:
+            return std::to_string(value.type.Real);
+        case BACNET_APPLICATION_TAG_DOUBLE:
+            return std::to_string(value.type.Double);
+        case BACNET_APPLICATION_TAG_OCTET_STRING:
+            return std::string(reinterpret_cast<const char*>(value.type.Octet_String.value), value.type.Octet_String.length);
+        case BACNET_APPLICATION_TAG_CHARACTER_STRING:
+            return std::string(value.type.Character_String.value, value.type.Character_String.length);
+        case BACNET_APPLICATION_TAG_BIT_STRING:
+            return std::string(reinterpret_cast<const char*>(value.type.Bit_String.value), value.type.Bit_String.bits_used);
+        case BACNET_APPLICATION_TAG_ENUMERATED:
+            return std::to_string(value.type.Enumerated);
+        default:
+            return "";
+    }
+}
+
 static void ccov_notification_handle(BACNET_COV_DATA *cov_data)
 {
     auto cov_key = std::make_pair(cov_data->initiatingDeviceIdentifier, cov_data->monitoredObjectIdentifier);
     auto subscribe_end = std::chrono::system_clock::now() + std::chrono::seconds(cov_data->timeRemaining);
     cov_map[cov_key] = {.subscribe_end = subscribe_end};
+    for (auto *property_value = cov_data->listOfValues; property_value != nullptr; property_value = property_value->next) {
+        if (property_value->propertyIdentifier == PROP_PRESENT_VALUE) {
+            if (ccov_notification_handler_) {
+                ccov_notification_handler_(
+                    cov_data->initiatingDeviceIdentifier,
+                    cov_data->monitoredObjectIdentifier.type,
+                    cov_data->monitoredObjectIdentifier.instance,
+                    application_data_value_to_string(property_value->value)
+                );
+            }
+        }
+    }
+
 }
-static BACNET_COV_NOTIFICATION ccov_cb = {.next = nullptr, .callback = ccov_notification_handle};
 
 static void handle_object_list(uint32_t device_id, const BACNET_READ_PROPERTY_DATA& data) {
     if (BACnet_Debug_Enabled) {
@@ -221,6 +257,7 @@ void TsmTimeoutHandler(uint8_t invoke_id)
 
 static void init_service_handlers(void)
 {
+    static BACNET_COV_NOTIFICATION ccov_cb = {.next = nullptr, .callback = ccov_notification_handle};
     Device_Init(NULL);
     /* Note: this applications doesn't need to handle who-is
        it is confusing for the user! */
@@ -275,7 +312,7 @@ void renew_subscriptions() {
     }
 }
 
-void bacnet_init() {
+void bacnet_init(ccov_notification_handler handler) {
     /* check for local environment settings */
     if (getenv("BACNET_DEBUG")) {
         BACnet_Debug_Enabled = true;
@@ -290,6 +327,7 @@ void bacnet_init() {
     mstimer_set(&who_is_timer, 10 * apdu_timeout() * apdu_retries());
     mstimer_set(&datalink_timer, 1000);
     mstimer_set(&tsm_timer, 100);
+    ccov_notification_handler_ = handler;
     BACNET_ADDRESS dest = {
         .mac_len = 0,
         .net = BACNET_BROADCAST_NETWORK,
