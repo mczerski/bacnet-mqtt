@@ -32,12 +32,20 @@ void MessageHandler::init_() {
 
     auto register_callback = [this] {
         mosquitto_subscribe_callback(
-            &MessageHandler::call_back_func, NULL,
-            "MessageHandler/#", 0,
-            _host.c_str(), _port,
-            NULL, 60, true,
-            NULL, NULL,
-            NULL, NULL);
+            &MessageHandler::call_back_func,
+            NULL,
+            "bacnet-in/#",
+            0,
+            _host.c_str(),
+            _port,
+            NULL,
+            60,
+            true,
+            NULL,
+            NULL,
+            NULL,
+            NULL
+        );
         // this api can not return??
     };
     std::thread register_callback_thread(register_callback);
@@ -48,12 +56,12 @@ void MessageHandler::init_() {
 int MessageHandler::call_back_func(struct mosquitto *mosq, void *userdata, const struct mosquitto_message *msg) {
     std::cout << "FROM topic: " << msg->topic << std::endl;
     std::string message(reinterpret_cast<char *>(msg->payload), msg->payloadlen);
-    std::cout << "GOT message:\n" << message << std::endl;
+    std::cout << "GOT message: " << message << std::endl;
+    callback_(msg->topic, message);
     return 0;
 }
 
 int MessageHandler::pub_message(const std::string& topic, const std::string& message) {
-
     if (mosquitto_publish(_mosq, nullptr, topic.c_str(),
                       static_cast<int>(message.length()) + 1,
                       message.c_str(), 0, 0) != MOSQ_ERR_SUCCESS) {
@@ -62,4 +70,9 @@ int MessageHandler::pub_message(const std::string& topic, const std::string& mes
         return 1;
     }
     return 0;
+}
+
+std::function<void(const std::string&, const std::string&)> MessageHandler::callback_;
+void MessageHandler::add_callback(std::function<void(const std::string&, const std::string&)> callback) {
+    callback_ = callback;
 }

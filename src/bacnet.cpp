@@ -27,6 +27,7 @@ std::unordered_map<uint32_t, device_entry> device_map;
 
 struct cov_entry {
     std::chrono::time_point<std::chrono::system_clock> subscribe_end;
+    long tag;
 };
 template <>
 struct std::hash<std::pair<uint32_t, BACNET_OBJECT_ID>>
@@ -106,10 +107,11 @@ static void ccov_notification_handle(BACNET_COV_DATA *cov_data)
     cov_map[cov_key] = {.subscribe_end = subscribe_end};
     for (auto *property_value = cov_data->listOfValues; property_value != nullptr; property_value = property_value->next) {
         if (property_value->propertyIdentifier == PROP_PRESENT_VALUE) {
+            cov_map[cov_key] = {.subscribe_end = subscribe_end, .tag = property_value->value.tag};
             if (ccov_notification_handler_) {
                 ccov_notification_handler_(
                     cov_data->initiatingDeviceIdentifier,
-                    cov_data->monitoredObjectIdentifier.type,
+                    bactext_object_type_name(cov_data->monitoredObjectIdentifier.type),
                     cov_data->monitoredObjectIdentifier.instance,
                     application_data_value_to_string(property_value->value)
                 );
@@ -282,14 +284,12 @@ static void init_service_handlers(void)
 }
 
 void renew_subscriptions() {
-    auto now = std::chrono::system_clock::now() + std::chrono::minutes(1);
     std::unordered_set<uint32_t> handeled_devices;
     for (const auto& [cov_key, cov_entry]: cov_map) {
         if (handeled_devices.count(cov_key.first)) {
             continue;
         }
-        auto next = std::chrono::duration_cast<std::chrono::seconds>(cov_entry.subscribe_end - now);
-        if (cov_entry.subscribe_end <= now) {
+        if (cov_entry.subscribe_end - std::chrono::minutes(1) <= std::chrono::system_clock::now()) {
             if (BACnet_Debug_Enabled) {
                 fprintf(
                     stderr,
@@ -323,7 +323,7 @@ void bacnet_init(ccov_notification_handler handler) {
     address_init();
     dlenv_init();
     atexit(datalink_cleanup);
-    mstimer_set(&subscription_timer, apdu_timeout() * apdu_retries());
+    mstimer_set(&subscription_timer, 5000);
     mstimer_set(&who_is_timer, 10 * apdu_timeout() * apdu_retries());
     mstimer_set(&datalink_timer, 1000);
     mstimer_set(&tsm_timer, 100);
@@ -361,7 +361,8 @@ void bacnet_task() {
         mstimer_reset(&subscription_timer);
         renew_subscriptions();
     }
-    if (mstimer_expired(&subscription_timer)) {
+    if (mstimer_expired(&who_is_timer)) {
+        mstimer_reset(&who_is_timer);
         if (BACnet_Debug_Enabled) {
             fprintf(stderr, "Sending Who-Is Request\n");
         }
@@ -372,4 +373,42 @@ void bacnet_task() {
         };
         Send_WhoIs_To_Network(&dest, -1, -1);
     }
+}
+
+void bacnet_send(uint32_t id, const std::string& type, uint32_t instance, std::string value) {
+    unsigned type_int;
+    if (not bactext_object_type_strtol(type.c_str(), &type_int)) {
+        fprintf(stderr, "Unknown type for id: %d, type: %s, instance: %d\n", id, type.c_str(), instance);
+    }
+    auto cov_key = std::make_pair(id, BACNET_OBJECT_ID{.type = BACnetObjectType(type_int), .instance = instance});
+    auto cov_entry_it = cov_map.find(cov_key);
+    if (cov_entry_it == cov_map.end()) {
+        fprintf(stderr, "Unknown property for id: %d, type: %s, instance: %d\n", id, type.c_str(), instance);
+        return;
+    }
+    BACNET_APPLICATION_DATA_VALUE data_value;
+    if (
+        !bacapp_parse_application_data(
+            static_cast<BACNET_APPLICATION_TAG>(cov_entry_it->second.tag),
+            const_cast<char *>(value.c_str()), &data_value)
+    ) {
+        fprintf(
+            stderr,
+            "Error: unable to parse the value %s, for id: %d, type: %s, instance: %d\n",
+            value.c_str(),
+            id,
+            type.c_str(),
+            instance
+        );
+        return;
+    }
+    Send_Write_Property_Request(
+        id,
+        BACnetObjectType(type_int),
+        instance,
+        PROP_PRESENT_VALUE,
+        &data_value,
+        0,
+        BACNET_ARRAY_ALL
+    );
 }
