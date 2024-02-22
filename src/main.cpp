@@ -1,9 +1,8 @@
 #include "mqtt.hpp"
 #include "bacnet.hpp"
 #include <thread>
+#include <iostream>
  
-using namespace std;
-
 std::vector<std::string> split_string(const std::string& str, char delimiter) {
     std::vector<std::string> result;
 
@@ -34,10 +33,15 @@ int main(int argc, char *argv[]) {
         if (elements.size() != 4) {
             return;
         }
-        uint32_t id = std::stoul(elements[1]);
-        const std::string& type = elements[2];
-        uint32_t instance = std::stoul(elements[3]);
-        bacnet_send(id, type, instance, message);
+	try {
+            uint32_t id = std::stoul(elements[1]);
+            const std::string& type = elements[2];
+            uint32_t instance = std::stoul(elements[3]);
+            bacnet_send(id, type, instance, message);
+	}
+	catch (const std::invalid_argument& e) {
+	    std::cerr << "Error receiving message on topic: " << topic << ". message: " << message << ". Error: " << e.what() << std::endl;
+	}
     });
  
     while (true) {
