@@ -44,9 +44,6 @@ std::unordered_map<std::pair<uint32_t, BACNET_OBJECT_ID>, cov_entry> cov_map;
 
 static void device_map_add(uint32_t device_id)
 {
-    if (device_map.count(device_id))
-        return;
-
     if (BACnet_Debug_Enabled) {
         fprintf(stderr, "Reading object list from device %u\n", device_id);
     }
