@@ -386,7 +386,7 @@ void bacnet_send(uint32_t id, const std::string& type, uint32_t instance, std::s
         fprintf(stderr, "Unknown property for id: %d, type: %s, instance: %d\n", id, type.c_str(), instance);
         return;
     }
-    BACNET_APPLICATION_DATA_VALUE data_value;
+    BACNET_APPLICATION_DATA_VALUE data_value = {};
     if (
         !bacapp_parse_application_data(
             static_cast<BACNET_APPLICATION_TAG>(cov_entry_it->second.tag),
