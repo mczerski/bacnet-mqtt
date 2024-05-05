@@ -15,6 +15,7 @@ FetchContent_Declare(
   GIT_TAG bacnet-stack-1.3.4
   )
 FetchContent_MakeAvailable(bacnet-stack)
+target_compile_definitions(bacnet-stack PUBLIC MSTP_PDU_PACKET_COUNT=128)
 
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 include_directories(${MOSQUITTO_INCLUDE_DIR})

@@ -152,6 +152,24 @@ static void handle_object_list(uint32_t device_id, const BACNET_READ_PROPERTY_DA
                 if (object_id.type == OBJECT_DEVICE)
                     continue;
                 cov_map[std::make_pair(device_id, object_id)] = {.subscribe_end = std::chrono::time_point<std::chrono::system_clock>()};
+		auto cov_key = std::make_pair(device_id, object_id);
+                if (BACnet_Debug_Enabled) {
+                    fprintf(
+                        stderr,
+                        "Sending COV subscribe to: %d, type: %s, instance %d\n",
+                        cov_key.first,
+                        bactext_object_type_name(cov_key.second.type),
+                        cov_key.second.instance
+                    );
+                }
+                BACNET_SUBSCRIBE_COV_DATA cov_data = {
+                    .subscriberProcessIdentifier = cov_key.first,
+                    .monitoredObjectIdentifier = cov_key.second,
+                    .cancellationRequest = false,
+                    .issueConfirmedNotifications = true,
+                    .lifetime = 300
+                };
+                Send_COV_Subscribe(cov_key.first, &cov_data);
             }
             device_map[device_id] = {.object_list = std::move(object_list)};
             if (BACnet_Debug_Enabled) {
@@ -204,7 +222,7 @@ static void handler_subscribe_ccov_ack(
     if (not found)
         return;
 
-    printf("SubscribeCOV Acknowledged from: %x\n", src->mac[0]);
+    fprintf(stderr, "SubscribeCOV Acknowledged from: %x\n", src->mac[0]);
 }
 
 static void MyErrorHandler(
@@ -214,7 +232,8 @@ static void MyErrorHandler(
     BACNET_ERROR_CODE error_code
 )
 {
-    printf(
+    fprintf(
+        stderr,
         "BACnet Error (invoke id %d): %s: %s\n",
         invoke_id,
         bactext_error_class_name(static_cast<int>(error_class)),
@@ -251,7 +270,6 @@ static void MyRejectHandler(
 void TsmTimeoutHandler(uint8_t invoke_id)
 {
     fprintf(stderr, "BACnet Timeout: %d\n", invoke_id);
-    tsm_free_invoke_id(invoke_id);
 }
 
 static void init_service_handlers(void)
