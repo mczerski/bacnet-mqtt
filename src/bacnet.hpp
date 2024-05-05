@@ -1,5 +1,6 @@
 #pragma once
 
+#define NOMINMAX
 #include <bacnet/bactext.h>
 #include <bacnet/iam.h>
 #include <bacnet/basic/binding/address.h>

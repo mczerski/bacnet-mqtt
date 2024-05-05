@@ -2,7 +2,7 @@
 #include "bacnet.hpp"
 #include <thread>
 #include <iostream>
- 
+
 std::vector<std::string> split_string(const std::string& str, char delimiter) {
     std::vector<std::string> result;
 

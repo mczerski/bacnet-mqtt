@@ -12,7 +12,7 @@ FetchContent_Declare(
   bacnet-stack
   GIT_REPOSITORY https://github.com/bacnet-stack/bacnet-stack.git
   GIT_SHALLOW TRUE
-  GIT_TAG bacnet-stack-1.3.2
+  GIT_TAG bacnet-stack-1.3.4
   )
 FetchContent_MakeAvailable(bacnet-stack)
 
